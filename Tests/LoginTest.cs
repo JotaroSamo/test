@@ -6,6 +6,9 @@ using FluentAssertions;
 
 [TestFixture]
 [AllureNUnit]
+[Category("functional")]
+[AllureFeature("Login Feature")]
+[AllureSuite("Functional Tests")]
 public class LoginTest : PageTest
 {
     [Test]
