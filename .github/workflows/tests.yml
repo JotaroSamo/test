@@ -1,69 +1,387 @@
-name: AQA Tests
+# ═══════════════════════════════════════════════════════════════════
+# CI/CD ПАЙПЛАЙН ДЛЯ AQA-ПРОЕКТА
+#
+# CI (Continuous Integration) = запускаем тесты автоматически при каждом коммите
+# CD (Continuous Deployment)  = автоматически публикуем отчёт на GitHub Pages
+#
+# Порядок выполнения (пирамида тестирования):
+#
+#   [unit-tests] ──┐
+#                  ├──→ [integration-tests] ──┐
+#   [smoke-tests] ─┘                          ├──→ [functional-tests] ──→ [allure-report]
+#                                             │
+#   [performance-tests] (только по расписанию/вручную)
+#
+# Принцип: быстрые тесты первыми. Если юниты упали — нет смысла запускать E2E.
+# ═══════════════════════════════════════════════════════════════════
 
+name: AQA Tests Pipeline  # Название пайплайна — отображается в GitHub Actions UI
+
+# ───────────────────────────────────────────────────────────────────
+# ТРИГГЕРЫ: когда запускать пайплайн
+# ───────────────────────────────────────────────────────────────────
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
+  push:                     # Триггер 1: при push в репозиторий
+    branches: [main]        # — только в ветку main (не в feature-ветки)
 
+  pull_request:             # Триггер 2: при создании/обновлении Pull Request
+    branches: [main]        # — только для PR которые хотят смержиться в main
+
+  workflow_dispatch:        # Триггер 3: ручной запуск через кнопку в GitHub UI
+    inputs:                 # — входные параметры для ручного запуска
+      run_performance:
+        description: 'Запустить нагрузочные тесты? (true/false)'
+        required: false
+        default: 'false'
+        type: choice
+        options: ['false', 'true']
+
+  schedule:                 # Триггер 4: по расписанию (cron-синтаксис)
+    - cron: '0 6 * * 1-5'  # Каждый будний день в 6:00 UTC (= 9:00 Москва)
+                            # Формат: минуты часы день-месяца месяц день-недели
+                            # 1-5 = Пн-Пт
+
+# ───────────────────────────────────────────────────────────────────
+# ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ: одно место для изменений
+# ───────────────────────────────────────────────────────────────────
+env:
+  DOTNET_VERSION: '10.0.x'  # Версия .NET — меняем здесь, применяется везде
+  BUILD_CONFIG: 'Release'   # Конфигурация сборки: Debug (медленно) / Release (быстро)
+
+# ───────────────────────────────────────────────────────────────────
+# ПАРАЛЛЕЛЬНАЯ ОТМЕНА ЗАПУСКОВ
+# Если запушили новый коммит пока старый пайплайн ещё работает —
+# старый отменяется автоматически. Экономим бесплатные минуты GitHub.
+# ───────────────────────────────────────────────────────────────────
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}  # Уникальный ключ = имя workflow + ветка
+  cancel-in-progress: true                         # Отменить старый если запустился новый
+
+# ═══════════════════════════════════════════════════════════════════
+# JOB 1: ЮНИТ-ТЕСТЫ
+# Запускается ПЕРВЫМ и ПАРАЛЛЕЛЬНО с smoke-tests.
+# Не требует браузера → самый быстрый job (10-30 секунд).
+# ═══════════════════════════════════════════════════════════════════
 jobs:
-  test:
+  unit-tests:
+    name: Unit Tests         # Отображаемое имя в GitHub Actions UI
+    runs-on: ubuntu-latest   # Тип runner'а: бесплатная виртуальная машина с Ubuntu
+                             # Варианты: ubuntu-latest, windows-latest, macos-latest
+
+    steps:
+      # Шаг 1: Скачать код из репозитория
+      - name: Checkout code
+        uses: actions/checkout@v4   # @v4 = версия экшена, всегда указывай явно!
+
+      # Шаг 2: Установить .NET SDK
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}  # Берём из env выше
+
+      # Шаг 3: Кэшировать NuGet пакеты
+      # Без кэша каждый run скачивает все пакеты (~200MB) заново = +2 минуты
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages                        # Папка с кэшем пакетов
+          key: nuget-${{ hashFiles('**/*.csproj') }}     # Ключ = хэш csproj файлов
+                                                         # Если csproj изменился → новый кэш
+          restore-keys: nuget-                           # Если точного кэша нет → берём любой nuget-*
+
+      # Шаг 4: Восстановить зависимости
+      - name: Restore dependencies
+        run: dotnet restore Tests/Tests.csproj
+
+      # Шаг 5: Собрать проект
+      - name: Build
+        run: dotnet build Tests/Tests.csproj --no-restore --configuration ${{ env.BUILD_CONFIG }}
+             # --no-restore: не восстанавливать снова, уже сделали на шаге 4
+
+      # Шаг 6: Запустить юнит-тесты
+      - name: Run Unit Tests
+        run: |
+          cd Tests
+          dotnet test --no-build \
+            --configuration ${{ env.BUILD_CONFIG }} \
+            --filter "Category=unit" \
+            --logger "allure-nunit;ResultsDirectory=allure-results"
+          # --no-build:        не собирать снова, уже собрали
+          # --filter:          запустить только тесты с атрибутом [Category("unit")]
+          # --logger allure-nunit: генерировать Allure-отчёт в папку allure-results
+
+      # Шаг 7: Сохранить результаты
+      # if: always() — сохраняем ДАЖЕ ЕСЛИ тесты упали (нам нужен отчёт об ошибках!)
+      - name: Upload Allure results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-allure-results       # Имя артефакта — уникальное для каждого job
+          path: Tests/allure-results      # Папка с результатами
+          retention-days: 7               # Хранить 7 дней (потом удалить автоматически)
+
+# ═══════════════════════════════════════════════════════════════════
+# JOB 2: СМОУК-ТЕСТЫ
+# Запускается ПАРАЛЛЕЛЬНО с unit-tests (нет needs: [...]).
+# Требует браузер → чуть дольше чем юниты.
+# ═══════════════════════════════════════════════════════════════════
+  smoke-tests:
+    name: Smoke Tests
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '10.0.x'
+          dotnet-version: ${{ env.DOTNET_VERSION }}
 
-      - name: Install Playwright browsers
-        run: |
-          cd Tests
-          dotnet build
-          dotnet tool install --global Microsoft.Playwright.CLI
-          playwright install chromium --with-deps
-
-      - name: Run tests
-        run: |
-          cd Tests
-          dotnet test
-
-      - name: Upload allure results
-        uses: actions/upload-artifact@v4
-        if: always()
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
         with:
-          name: allure-results
-          path: Tests/bin/Debug/net10.0/allure-results
+          path: ~/.nuget/packages
+          key: nuget-${{ hashFiles('**/*.csproj') }}
+          restore-keys: nuget-
 
-  allure-report:
-    needs: test
+      # Собираем проект — нужно для playwright.ps1
+      - name: Build
+        run: |
+          cd Tests
+          dotnet build --configuration ${{ env.BUILD_CONFIG }}
+
+      # Устанавливаем браузер Chromium для Playwright
+      # playwright.ps1 — скрипт, который создаётся при сборке проекта
+      - name: Install Playwright browser (Chromium)
+        run: |
+          cd Tests
+          pwsh bin/${{ env.BUILD_CONFIG }}/net10.0/playwright.ps1 install chromium --with-deps
+          # --with-deps: устанавливает системные зависимости (libglib, libnss и др.)
+          # На Ubuntu они не установлены по умолчанию
+
+      - name: Run Smoke Tests
+        run: |
+          cd Tests
+          dotnet test --no-build \
+            --configuration ${{ env.BUILD_CONFIG }} \
+            --filter "Category=smoke" \
+            --logger "allure-nunit;ResultsDirectory=allure-results"
+
+      - name: Upload Allure results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-allure-results
+          path: Tests/allure-results
+          retention-days: 7
+
+# ═══════════════════════════════════════════════════════════════════
+# JOB 3: ИНТЕГРАЦИОННЫЕ ТЕСТЫ
+# needs: [unit-tests] → запускается ТОЛЬКО ПОСЛЕ успешных юнит-тестов.
+# Если юниты упали — этот job не запустится вообще (пропустится).
+# ═══════════════════════════════════════════════════════════════════
+  integration-tests:
+    name: Integration Tests
     runs-on: ubuntu-latest
-    if: always()
+    needs: [unit-tests]       # Зависимость: ждать завершения unit-tests
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-      - name: Download results
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ hashFiles('**/*.csproj') }}
+          restore-keys: nuget-
+
+      - name: Run Integration Tests
+        run: |
+          cd Tests
+          dotnet test \
+            --configuration ${{ env.BUILD_CONFIG }} \
+            --filter "Category=integration" \
+            --logger "allure-nunit;ResultsDirectory=allure-results"
+
+      - name: Upload Allure results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-allure-results
+          path: Tests/allure-results
+          retention-days: 7
+
+# ═══════════════════════════════════════════════════════════════════
+# JOB 4: ФУНКЦИОНАЛЬНЫЕ (E2E) ТЕСТЫ
+# needs: [smoke-tests, integration-tests] → ждёт ОБА предыдущих job'а.
+# Самый долгий job — запускается последним.
+# ═══════════════════════════════════════════════════════════════════
+  functional-tests:
+    name: Functional Tests
+    runs-on: ubuntu-latest
+    needs: [smoke-tests, integration-tests]  # Ждать ОБА job'а
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ hashFiles('**/*.csproj') }}
+          restore-keys: nuget-
+
+      - name: Build
+        run: |
+          cd Tests
+          dotnet build --configuration ${{ env.BUILD_CONFIG }}
+
+      - name: Install Playwright browser (Chromium)
+        run: |
+          cd Tests
+          pwsh bin/${{ env.BUILD_CONFIG }}/net10.0/playwright.ps1 install chromium --with-deps
+
+      - name: Run Functional Tests
+        run: |
+          cd Tests
+          dotnet test --no-build \
+            --configuration ${{ env.BUILD_CONFIG }} \
+            --filter "Category=functional" \
+            --logger "allure-nunit;ResultsDirectory=allure-results"
+        env:
+          # Секреты из GitHub Settings → Secrets → Actions
+          # Используем переменные окружения вместо хардкода логина/пароля в коде
+          # В тестах: Environment.GetEnvironmentVariable("TEST_USERNAME")
+          TEST_USERNAME: ${{ secrets.TEST_USERNAME }}
+          TEST_PASSWORD: ${{ secrets.TEST_PASSWORD }}
+
+      - name: Upload Allure results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: functional-allure-results
+          path: Tests/allure-results
+          retention-days: 7
+
+      # При падении тестов сохраняем скриншоты — помогает понять что пошло не так
+      - name: Upload Playwright traces on failure
+        if: failure()   # Только при падении (не при успехе)
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-traces
+          path: Tests/bin/${{ env.BUILD_CONFIG }}/net10.0/playwright-traces/
+
+# ═══════════════════════════════════════════════════════════════════
+# JOB 5: НАГРУЗОЧНЫЕ ТЕСТЫ
+# Запускается ТОЛЬКО при ручном запуске (run_performance=true)
+# или по расписанию (schedule).
+# НЕ запускается при каждом push — это долго и нагружает сайт.
+# ═══════════════════════════════════════════════════════════════════
+  performance-tests:
+    name: Performance Tests
+    runs-on: ubuntu-latest
+    # Условие запуска: только по расписанию ИЛИ если вручную выбрали true
+    if: |
+      github.event_name == 'schedule' ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.run_performance == 'true')
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ hashFiles('**/*.csproj') }}
+          restore-keys: nuget-
+
+      - name: Run Performance Tests
+        run: |
+          cd Tests
+          dotnet test \
+            --configuration ${{ env.BUILD_CONFIG }} \
+            --filter "Category=performance" \
+            --logger "allure-nunit;ResultsDirectory=allure-results"
+        timeout-minutes: 15    # Принудительно остановить если висит > 15 минут
+
+      - name: Upload Allure results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: performance-allure-results
+          path: Tests/allure-results
+          retention-days: 30   # Храним дольше — для сравнения трендов производительности
+
+# ═══════════════════════════════════════════════════════════════════
+# JOB 6: ALLURE ОТЧЁТ
+# Собирает результаты от ВСЕХ предыдущих job'ов и публикует на GitHub Pages.
+# if: always() — запускается даже если какие-то тесты упали.
+# ═══════════════════════════════════════════════════════════════════
+  allure-report:
+    name: Allure Report
+    runs-on: ubuntu-latest
+    # Ждём все тестовые job'ы (кроме performance, он опциональный)
+    needs: [unit-tests, smoke-tests, integration-tests, functional-tests]
+    if: always()   # Всегда запускать — нам нужен отчёт даже при падении тестов
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Скачиваем артефакты от всех предыдущих job'ов
+      # pattern: '*-allure-results' — маска, совпадает с именами всех наших артефактов
+      - name: Download all allure results
         uses: actions/download-artifact@v4
         with:
-          name: allure-results
-          path: allure-results
+          pattern: '*-allure-results'    # Скачать все артефакты по маске
+          path: allure-results-combined  # Куда скачать
+          merge-multiple: true           # Объединить все в одну папку (не в подпапки)
 
+      # Устанавливаем Allure CLI — инструмент для генерации HTML-отчёта
       - name: Install Allure CLI
         run: |
-          wget -O allure.tgz https://github.com/allure-framework/allure2/releases/download/2.27.0/allure-2.27.0.tgz
-          tar -zxvf allure.tgz
-          sudo mv allure-2.27.0 /opt/allure
+          wget -q -O allure.tgz \
+            https://github.com/allure-framework/allure2/releases/download/2.27.0/allure-2.27.0.tgz
+          # wget -q = тихий режим (не засорять лог)
+          # -O allure.tgz = сохранить как allure.tgz
+          tar -zxf allure.tgz
+          # -z = разархивировать gzip, -x = извлечь, -f = из файла
+          sudo mv allure-2.27.0 /opt/allure     # Переносим в системную директорию
           sudo ln -s /opt/allure/bin/allure /usr/local/bin/allure
+          # ln -s = создать символическую ссылку чтобы вызывать просто 'allure'
 
+      # Генерируем HTML-отчёт из JSON результатов
       - name: Generate Allure Report
-        run: allure generate allure-results -o allure-report --clean
+        run: allure generate allure-results-combined -o allure-report --clean
+             # allure-results-combined = входная папка с JSON
+             # -o allure-report        = выходная папка с HTML
+             # --clean                 = очистить выходную папку перед генерацией
 
+      # Публикуем HTML-отчёт на GitHub Pages (бесплатный хостинг от GitHub)
+      # Отчёт будет доступен по адресу: https://<username>.github.io/<repo>/
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v4
+        if: github.ref == 'refs/heads/main'   # Публикуем только из ветки main
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_branch: gh-pages
-          publish_dir: allure-report
+          github_token: ${{ secrets.GITHUB_TOKEN }}  # Авто-токен GitHub (не нужно создавать)
+          publish_branch: gh-pages    # Ветка для GitHub Pages
+          publish_dir: allure-report  # Папка с HTML для публикации

@@ -1,0 +1,22 @@
+# Артефакты сборки
+bin/
+obj/
+
+# Пользовательские настройки Visual Studio / Rider
+.vs/
+.idea/
+*.user
+*.suo
+
+# Результаты тестов
+TestResults/
+allure-results/
+allure-report/
+
+# Временные файлы Playwright (скриншоты, трейсы при падениях)
+playwright-traces/
+test-results/
+
+# OS
+.DS_Store
+Thumbs.db
