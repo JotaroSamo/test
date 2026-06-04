@@ -104,11 +104,12 @@ jobs:
           cd Tests
           dotnet test --no-build \
             --configuration ${{ env.BUILD_CONFIG }} \
-            --filter "Category=unit" \
-            --logger "allure-nunit;ResultsDirectory=allure-results"
-          # --no-build:        не собирать снова, уже собрали
-          # --filter:          запустить только тесты с атрибутом [Category("unit")]
-          # --logger allure-nunit: генерировать Allure-отчёт в папку allure-results
+            --filter "Category=unit"
+          # --no-build: не собирать снова, уже собрали
+          # --filter:   запустить только тесты с атрибутом [Category("unit")]
+          # Allure.NUnit генерирует результаты автоматически через NUnit-хуки,
+          # путь берётся из allureConfig.json ("directory":"allure-results")
+          # → итоговый путь: Tests/bin/Release/net10.0/allure-results
 
       # Шаг 7: Сохранить результаты
       # if: always() — сохраняем ДАЖЕ ЕСЛИ тесты упали (нам нужен отчёт об ошибках!)
@@ -116,8 +117,8 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: unit-allure-results       # Имя артефакта — уникальное для каждого job
-          path: Tests/allure-results      # Папка с результатами
+          name: unit-allure-results
+          path: Tests/bin/${{ env.BUILD_CONFIG }}/net10.0/allure-results
           retention-days: 7               # Хранить 7 дней (потом удалить автоматически)
 
 # ═══════════════════════════════════════════════════════════════════
@@ -165,15 +166,14 @@ jobs:
           cd Tests
           dotnet test --no-build \
             --configuration ${{ env.BUILD_CONFIG }} \
-            --filter "Category=smoke" \
-            --logger "allure-nunit;ResultsDirectory=allure-results"
+            --filter "Category=smoke"
 
       - name: Upload Allure results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: smoke-allure-results
-          path: Tests/allure-results
+          path: Tests/bin/${{ env.BUILD_CONFIG }}/net10.0/allure-results
           retention-days: 7
 
 # ═══════════════════════════════════════════════════════════════════
@@ -207,15 +207,14 @@ jobs:
           cd Tests
           dotnet test \
             --configuration ${{ env.BUILD_CONFIG }} \
-            --filter "Category=integration" \
-            --logger "allure-nunit;ResultsDirectory=allure-results"
+            --filter "Category=integration"
 
       - name: Upload Allure results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: integration-allure-results
-          path: Tests/allure-results
+          path: Tests/bin/${{ env.BUILD_CONFIG }}/net10.0/allure-results
           retention-days: 7
 
 # ═══════════════════════════════════════════════════════════════════
@@ -259,8 +258,7 @@ jobs:
           cd Tests
           dotnet test --no-build \
             --configuration ${{ env.BUILD_CONFIG }} \
-            --filter "Category=functional" \
-            --logger "allure-nunit;ResultsDirectory=allure-results"
+            --filter "Category=functional"
         env:
           # Секреты из GitHub Settings → Secrets → Actions
           # Используем переменные окружения вместо хардкода логина/пароля в коде
@@ -273,7 +271,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: functional-allure-results
-          path: Tests/allure-results
+          path: Tests/bin/${{ env.BUILD_CONFIG }}/net10.0/allure-results
           retention-days: 7
 
       # При падении тестов сохраняем скриншоты — помогает понять что пошло не так
@@ -319,8 +317,7 @@ jobs:
           cd Tests
           dotnet test \
             --configuration ${{ env.BUILD_CONFIG }} \
-            --filter "Category=performance" \
-            --logger "allure-nunit;ResultsDirectory=allure-results"
+            --filter "Category=performance"
         timeout-minutes: 15    # Принудительно остановить если висит > 15 минут
 
       - name: Upload Allure results
@@ -328,7 +325,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: performance-allure-results
-          path: Tests/allure-results
+          path: Tests/bin/${{ env.BUILD_CONFIG }}/net10.0/allure-results
           retention-days: 30   # Храним дольше — для сравнения трендов производительности
 
 # ═══════════════════════════════════════════════════════════════════
