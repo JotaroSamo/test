@@ -1,2 +1,0 @@
-"Status","Start Time","Stop Time","Duration in ms","Parent Suite","Suite","Sub Suite","Test Class","Test Method","Name","Description"
-"passed","Thu Jun 04 08:31:03 UTC 2026","Thu Jun 04 08:31:05 UTC 2026","1865","Tests","","LoginTest","LoginTest","Login_WithValidCreds_ShouldSucceed","Login_WithValidCreds_ShouldSucceed",""
