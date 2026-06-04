@@ -59,12 +59,12 @@ jobs:
           path: gh-pages
 
       - name: Generate Allure Report
-        uses: allure-framework/allure-action@v1
+        uses: simple-ict/allure-report-action@master
         with:
           allure_results: allure-results
           allure_report: allure-report
+          gh_pages: gh-pages
           allure_history: allure-history
-          keep_reports: 20
 
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v4
